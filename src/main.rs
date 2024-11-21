@@ -1,71 +1,43 @@
-use std::ops::Range;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use url::Url;
-use futures_util::{StreamExt, SinkExt};
-use solana_client::rpc_client::RpcClient;
-use solana_sdk::signature::Signature;
-use solana_client::rpc_config::RpcBlockConfig;
-use solana_sdk::commitment_config::CommitmentConfig;
-use tokio::time::{sleep, Duration};
-use std::time::{SystemTime, UNIX_EPOCH};
-use chrono::{DateTime, Utc, Local};
-use futures_util::io::Window;
-use tungstenite::Message::Text;
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // ... ваша конфигурация RPC
+use solana_client::{
+    rpc_config::RpcProgramAccountsConfig,
+    rpc_filter::{RpcFilterType, MemcmpEncodedBytes, Memcmp},
+    rpc_client::RpcClient,
+};
+use solana_sdk::pubkey::Pubkey;
+use std::str::FromStr;
+//use solana_client::rpc_filter::{MemcmpEncodedBytes};
+use solana_sdk::bs58;
 
-    let client = RpcClient::new("https://api.devnet.solana.com");
+fn main() {
+    // Укажите URL вашего RPC (например, от публичного провайдера или вашей ноды)
+    let rpc_url = "wss://api.mainnet-beta.solana.com";
+    let client = RpcClient::new(rpc_url.to_string());
+    println!("1");
+    // Публичный ключ программы Raydium
+    let program_id = Pubkey::from_str("EhhTKvKMXVG4rHQ2dkoL6yeEdHgB64ThnU9Gs2M2Aeog")
+        .expect("Invalid program ID");
 
-    let config = RpcBlockConfig {
-        max_supported_transaction_version: Some(0),
-        ..Default::default()
+    // Настройка фильтра для подписки на события программы
+    let config = RpcProgramAccountsConfig {
+        filters: Some(vec![RpcFilterType::Memcmp(
+            Memcmp::new(0, MemcmpEncodedBytes::Bytes(
+                bs58::decode("")
+                    .into_vec()
+                    .expect("Failed to decode Base58"),
+            )),
+        )]),
+        account_config: Default::default(),
+        with_context: Some(true),
+        sort_results: Some(false), // Указываем, что сортировать не нужно
     };
-    loop {
-        //Haloo
 
-        // Получаем информацию о последнем блоке
-        let local_time: DateTime<Local> = Local::now();
-        let formatted_time = local_time.format("%H:%M:%S:%f").to_string();
-        println!("До запроса слота, время: {}", formatted_time);
-        let slot = match client.get_slot() {
-            Ok(s) => s,
-
-            Err(e) => {
-                println!("Failed to get slot: {}", e);
-                continue; // Retry after 1 second
-            }
-        };
-        // Получаем блок по слоту
-        match client.get_block_with_config(slot, config) {
-            Ok(block) => {
-                // Получаем время блока
-                if let Some(time) = block.block_time{
-                    println!("Block time: {}", time);
-                }
-
-
-
-                if let Some(transactions) = block.transactions {
-                    let transaction_count = transactions.len();
-                    println!("Number of transactions in block: {}", transaction_count);
-                    for transaction in transactions {
-
-                        println!("Transaction status: {:?}", transaction.meta.unwrap().status);
-                        // Пример для первой транзакции
-                    }
-                } else {
-                    println!("No transactions in this block.");
-                }
-            }
-            Err(e) => {
-                println!("Failed to get block: {}", e);
+    // Получение аккаунтов программы
+    match client.get_program_accounts_with_config(&program_id, config) {
+        Ok(accounts) => {
+            for (pubkey, account) in accounts {
+                println!("Account: {}, Data: {:?}", pubkey, account.data);
             }
         }
-        let local_time: DateTime<Local> = Local::now();
-        let formatted_time = local_time.format("%H:%M:%S:%f").to_string();
-        println!("После запроса слота, время: {}", formatted_time);
-
-
+        Err(err) => eprintln!("Error fetching accounts: {:?}", err),
     }
 }
