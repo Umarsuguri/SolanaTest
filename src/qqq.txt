@@ -1,0 +1,323 @@
+
+async fn get_pool_address(pair_name: &str) -> Result<String, Box<dyn StdError>> {
+    let url = "https://api.raydium.io/v2/main/pairs";
+    let response: Value = reqwest::get(url).await?.json().await?;
+
+    // Проходим по списку пулов и ищем нужную пару
+    if let Some(pair) = response.as_array().unwrap().iter().find(|pair| {
+        pair["name"].as_str().unwrap_or("") == pair_name
+    }) {
+        if let Some(pool_address) = pair["address"].as_str() {
+            return Ok(pool_address.to_string());
+        }
+    }
+
+    Err(Box::new(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "Pool not found",
+    )))
+}
+async fn fetch_pairs() -> Result<(), Error> {
+    let url = "https://api.raydium.io/v2/main/pairs";
+    let response: Value = reqwest::get(url).await?.json().await?;
+    let pairs = response.as_array().unwrap();
+
+    println!("Доступные пары на Raydium:");
+    for pair in pairs {
+        if let Some(name) = pair["name"].as_str() {
+            println!("{}", name);
+        }
+    }
+    Ok(())
+}
+
+async fn fetch_and_store_pools(db_path: &str) -> Result<(), Error> {
+    let url = "https://api.raydium.io/v2/main/pairs";
+    let response: Value = reqwest::get(url).await?.json().await?;
+
+    // Подключение к базе данных
+    let conn = Connection::open(db_path).expect("Не удалось подключиться к базе данных");
+
+    // Создание таблицы, если она не существует
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS pools (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pair_name TEXT NOT NULL,
+            pool_address TEXT NOT NULL
+        )",
+        [],
+    )
+        .expect("Не удалось создать таблицу");
+
+    // Проходим по всем парам и добавляем их в базу данных
+    if let Some(pairs) = response.as_array() {
+        for pair in pairs {
+            if let (Some(pair_name), Some(pool_address)) = (
+                pair.get("name").and_then(|n| n.as_str()),
+                pair.get("ammId").and_then(|a| a.as_str()),
+            ) {
+                if (pair_name == "WSOL/DOGE") {
+                    conn.execute(
+                        "INSERT INTO pools (pair_name, pool_address) VALUES (?1, ?2)",
+                        params![pair_name, pool_address],
+                    )
+                        .expect("Не удалось вставить данные в таблицу");
+                    println!("Добавлена пара: {} с адресом пула: {}", pair_name, pool_address);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+async fn fetch_pairs_json() -> Result<(), reqwest::Error> {
+    let url = "https://api.raydium.io/v2/main/pairs";
+    let response: serde_json::Value = reqwest::get(url).await?.json().await?;
+
+    println!("Доступные пары на Raydium (с JSON):");
+    for pair in response.as_array().unwrap() {
+        println!("{:?}", pair);
+    }
+    Ok(())
+}
+
+async fn fetch_and_store_orca_pools(db_path: &str)-> Result<(), reqwest::Error> {
+    // URL для получения данных о пулах
+    let url = "https://api.orca.so/pools";
+    let response: Value = reqwest::get(url).await?.json().await?;
+
+    // Соединяемся с SQLite
+    let conn = Connection::open(db_path).expect("Не удалось подключиться к базе данных");
+
+    // Создаём таблицу
+    // Создание таблицы, если она не существует
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS pools (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pair_name TEXT NOT NULL,
+            pool_address TEXT NOT NULL
+        )",
+        [],
+    )
+        .expect("Не удалось создать таблицу");
+
+    // Обходим массив пулов
+    for pool in response.as_array().unwrap() {
+        //println!("Полный JSON объекта пула: {}", pool.to_string());
+        let token_a = pool["tokenA"].get("symbol").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
+        let token_b = pool["tokenB"].get("symbol").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
+        // Извлекаем имя пары безопасно (используем name или name2)
+        let pair_name = pool["name"].as_str().unwrap_or(pool["name2"].as_str().unwrap_or("UNKNOWN"));
+        let pool_address = pool["account"].as_str().unwrap_or(pool["mint_account"].as_str().unwrap_or("UNKNOWN"));
+        // Сохраняем данные в таблицу
+        conn.execute(
+            "INSERT INTO pools (pair_name, pool_address) VALUES (?1, ?2)",
+            params![pair_name, pool_address],
+        )
+            .expect("Не удалось вставить данные в таблицу");
+        println!("Добавлена пара: {} с адресом пула: {}", pair_name, pool_address);
+    }
+
+    println!("Данные успешно сохранены в SQLite");
+    Ok(())
+}
+
+async fn jupiter_pairs() -> Result<(), reqwest::Error> {
+    // Эндпоинт Jupiter API
+    let url = "https://quote-api.jup.ag/v4/index";
+
+    // Выполняем GET-запрос
+    let response: Value = reqwest::get(url).await?.json().await?;
+
+    // Парсим данные о пулах
+    if let Some(routes) = response.get("tokens") {
+        for (token, details) in routes.as_object().unwrap() {
+            if let Some(name) = details.get("symbol") {
+                if name.as_str().unwrap_or("").contains("SOL") {
+                    println!("Токен: {}, Данные: {:?}", name, details);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn update_prices_in_db(db_path: &str, rpc_url: &str) -> Result<()> {
+    // Подключаемся к базе данных и RPC
+    let conn = Connection::open(db_path)?;
+    let client = RpcClient::new(rpc_url.to_string());
+
+    let conn1 = Connection::open("db_path.db")?;
+    conn1.execute(
+        "CREATE TABLE IF NOT EXISTS pools (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pair_name TEXT NOT NULL,
+            pool_address TEXT NOT NULL,
+            price_a_in_b TEXT NOT NULL,
+            price_b_in_a TEXT NOT NULL
+        )",
+        [],
+    )
+        .expect("Не удалось создать таблицу");
+    // Читаем существующие пулы
+    let mut stmt = conn.prepare("SELECT pair_name, pool_address FROM pools")?;
+    let pool_iter = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+
+    // Проходим по каждому пулу
+    for pool in pool_iter {
+
+        let (pair_name, pool_address) = pool?;
+
+        let pool_pubkey = Pubkey::from_str(&pool_address).expect("Неверный формат адреса");
+        println!("\nАдрес пула {}: {:?} ", pair_name, pool_pubkey);
+        // Получаем данные аккаунта пула через RPC
+        let account_data = client.get_account_data(&pool_pubkey).expect("Ошибка RPC");
+        println!("Данные пула {:?}",account_data);
+
+
+        // Парсим данные и вычисляем цены
+
+        let (liquidity_a, liquidity_b) = parse_pool_data(&account_data).await;
+        let price_a_in_b = liquidity_b as f64 / liquidity_a as f64;
+        let price_b_in_a = liquidity_a as f64 / liquidity_b as f64;
+
+        println!("Цена {}",price_a_in_b);
+        // Добавляем данные в новую таблицу
+        conn1.execute(
+            "INSERT INTO pools (pair_name, pool_address, price_a_in_b, price_b_in_a)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![pair_name, pool_address, price_a_in_b, price_b_in_a],
+        )?;
+        println!(
+            "Пара: {}, Цена A в B: {:.6}, Цена B в A: {:.6}",
+            pair_name, price_a_in_b, price_b_in_a
+        );
+    }
+
+    Ok(())
+}
+async fn parse_pool_info(rpc_url: &str, pool_address: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let client = RpcClient::new(rpc_url.to_string());
+    let mut p=0;
+    let pool_pubkey = Pubkey::from_str(pool_address)?;
+    let account_data = client.get_account_data(&pool_pubkey)?;
+    let pool_state: LiquidityStateV4 = LiquidityStateV4::try_from_slice(&account_data)?;
+    let trade_fee = pool_state.swap_fee_numerator as f64 / pool_state.swap_fee_denominator as f64;
+    let mut old_price=0.00000001 as f64;
+    loop {
+
+        let base_balance_ui_Amount = client.get_token_account_balance(&pool_state.base_vault)?;
+        let quote_balance_ui_Amount = client.get_token_account_balance(&pool_state.quote_vault)?;
+        let mut base_balance = base_balance_ui_Amount.ui_amount.unwrap_or(0.0);
+        let mut quote_balance = quote_balance_ui_Amount.ui_amount.unwrap_or(0.0);
+        let adjusted_base_balance = quote_balance * (1.0 - trade_fee);  // Учитываем уменьшение из-за комиссии
+        let price = quote_balance / base_balance;
+        if (price != old_price) {
+            println!("Итерация: {}", p);
+            println!("WSOL {}", base_balance);
+            println!("DOGE {}", quote_balance);
+            println!("Цена токена {}", price);
+            let delta = (price - old_price )/old_price * 100.0;
+            println!("Дельта в % {}", delta);
+            old_price = price;
+        }
+        p=p+1;
+    }
+    Ok(())
+
+}
+
+async fn parse_pool_info_orca(rpc_url: &str, pool_address: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let client = RpcClient::new(rpc_url.to_string());
+    let mut p=0;
+    let pool_pubkey = Pubkey::from_str(pool_address)?;
+    let account_data = client.get_account_data(&pool_pubkey)?;
+    let pool_state: LiquidityStateV4 = LiquidityStateV4::try_from_slice(&account_data)?;
+    let trade_fee = pool_state.swap_fee_numerator as f64 / pool_state.swap_fee_denominator as f64;
+    let mut old_price=0.00000001 as f64;
+    loop {
+        let base_vault =  Pubkey::from_str("AJ5SaQYvS88g3oZZNaBkDAdTpjUWYzwMzaipK6QDNwVu")?;
+        let quote_vault = Pubkey::from_str("Bw1ZhZP7moAJ8zDAdtFPu2TPc4ZgZjPZb237tkVyaoDC")?;
+        let base_balance_ui_Amount = client.get_token_account_balance(&base_vault)?;
+        let quote_balance_ui_Amount = client.get_token_account_balance(&quote_vault)?;
+        let mut base_balance = base_balance_ui_Amount.ui_amount.unwrap_or(0.0);
+        let mut quote_balance = quote_balance_ui_Amount.ui_amount.unwrap_or(0.0);
+        let adjusted_base_balance = quote_balance * (1.0 - trade_fee);  // Учитываем уменьшение из-за комиссии
+        let price = quote_balance / base_balance;
+        if (price != old_price) {
+            println!("Итерация: {}", p);
+            println!("WSOL {}", base_balance);
+            println!("DOGE {}", quote_balance);
+            println!("Цена токена {}", price);
+            let delta = (price - old_price )/old_price * 100.0;
+            println!("Дельта в % {}", delta);
+            old_price = price;
+        }
+        p=p+1;
+    }
+    Ok(())
+
+}
+
+async fn parse_pool_info1(rpc_url: &str, pool_address: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let client = RpcClient::new(rpc_url.to_string());
+    let mut p=0;
+    let pool_pubkey = Pubkey::from_str(pool_address)?;
+    loop {
+        println!("Итерация: {}", p);
+        // println!("Адрес пула: {:?}", pool_pubkey);
+        let account_data = client.get_account_data(&pool_pubkey)?;
+        //  println!("Данные пула в байтах: {:?}", account_data);
+        // Декодирование данных пула
+        // println!("Размер account_data: {}", account_data.len());
+        // println!("Ожидаемый размер структуры: {}", std::mem::size_of::<LiquidityStateV4>());
+        let pool_state: lib::LiquidityStateV4 = lib::LiquidityStateV4::try_from_slice(&account_data)?;
+        // println!("Данные пула : {:?\n}", pool_state);
+        /*
+        if let Some(price) = pool_state.calculate_price_with_fees_in_quote() {
+            println!("Цена базового токена в котируемом: {:.6}", price);
+        } else {
+            println!("Недостаточно данных для расчёта цены базового токена.");
+        }
+
+        if let Some(price) = pool_state.calculate_price_with_fees_in_base() {
+            println!("Цена котируемого токена в базовом: {:.6}", price);
+        } else {
+            println!("Недостаточно данных для расчёта цены котируемого токена.");
+        }*/
+
+        let trade_fee = pool_state.swap_fee_numerator as f64 / pool_state.swap_fee_denominator as f64;
+
+        let base_balance_ui_Amount = client.get_token_account_balance(&pool_state.base_vault)?;
+        let base_token_acc = client.get_token_account(&pool_state.base_vault);
+        let quote_balance_ui_Amount = client.get_token_account_balance(&pool_state.quote_vault)?;
+        let mut base_balance = base_balance_ui_Amount.ui_amount.unwrap_or(0.0);
+        let mut quote_balance = quote_balance_ui_Amount.ui_amount.unwrap_or(0.0);
+        let adjusted_base_balance = quote_balance * (1.0 - trade_fee);  // Учитываем уменьшение из-за комиссии
+        println!("WSOL {}", base_balance);
+        println!("DOGE {}", quote_balance);
+        let price = quote_balance / base_balance;
+        println!("Цена токена {}", price);
+        p=p+1;
+        // Здесь можно добавить логику для расчета цен (аналог base и quote в JS).
+    }
+    Ok(())
+
+}
+async fn data_reading(rpc_url: &str,pool_address: &str,)-> Result<()> {
+    let client = RpcClient::new(rpc_url.to_string());
+    let pool_pubkey = Pubkey::from_str(&pool_address).expect("Неверный формат адреса");
+    let account_data = client.get_account_data(&pool_pubkey).expect("Ошибка RPC");
+    println!("Данные пула {:?}",account_data);
+    Ok(())
+}
+// Пример функции парсинга данных аккаунта пула
+async fn parse_pool_data(data: &[u8]) -> (u64, u64) {
+    // Предполагаем, что первые 8 байт — это liquidity A, а следующие 8 байт — liquidity B
+    let liquidity_a = u64::from_le_bytes(data[132..140].try_into().unwrap());
+    let liquidity_b = u64::from_le_bytes(data[140..148].try_into().unwrap());
+    (liquidity_a, liquidity_b)
+}
