@@ -1,5 +1,5 @@
 pub mod reydium;
-
+pub mod orca;
 use solana_client::rpc_client::RpcClient;
 use crate::arbitraj::reydium::{fetch_and_store_pools, get_price_reydium};
 
@@ -9,3 +9,4 @@ pub async fn update_data(client: RpcClient){
     fetch_and_store_pools(client).await.expect("TODO: panic message");
     println!("Done!");
 }
+

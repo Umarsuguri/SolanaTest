@@ -234,9 +234,10 @@ pub async fn fetch_and_store_pools(client: RpcClient) -> Result<(), Box<dyn std:
                     if account_data.len() == 1232 {
                         let pool_state: LiquidityStateV5 = LiquidityStateV5::try_from_slice(&account_data)?;
                         base_vault = pool_state.base_vault.to_string();
-                        base_token = get_token_symbol(&client, &pool_state.base_vault);
+                        base_token = get_token_symbol(&client, &pool_state.base_vault).trim_end_matches('\0').to_string();
+
                         quote_vault = pool_state.quote_vault.to_string();
-                        quote_token = get_token_symbol(&client, &pool_state.quote_vault);
+                        quote_token = get_token_symbol(&client, &pool_state.quote_vault).trim_end_matches('\0').to_string();
                     } else {
                         let pool_state: LiquidityStateV4 = LiquidityStateV4::try_from_slice(&account_data)?;
                         base_vault = pool_state.base_vault.to_string();
@@ -247,7 +248,7 @@ pub async fn fetch_and_store_pools(client: RpcClient) -> Result<(), Box<dyn std:
 
                     conn.execute(
                         "INSERT INTO reydium_pools (pair_name, base_token, quote_token, pool_address, base_vault, quote_vault) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                        params![pair_name, base_token, quote_token, pool_address, base_vault, quote_vault],
+                        params![pair_name, base_token.trim(), quote_token, pool_address, base_vault, quote_vault],
                     )
                         .expect("Не удалось вставить данные в таблицу");
                     println!("Добавлена пара: {} с адресом пула: {} \r\n", pair_name, pool_address);
@@ -277,26 +278,13 @@ pub fn get_prices_for_pools(
 
     let conn = Connection::open(db_path)?;
 
-    let mut stmt = conn.prepare("SELECT * FROM reydium_pools WHERE base_token = 'SOL'")?;
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)) // Пример извлечения двух столбцов
-    })?;
-
-    let pair1 = format!("{}/{}",token_a,token_b);
-    let pair2 = format!("{}/{}",token_b,token_a);
-
-    for row in rows {
-        let (column1, column2) = row?;
-        println!("{} {}", column1, column2); // Вывод значений
-    }
-
     // SQL-запрос для выбора подходящих пулов
     let mut stmt = conn.prepare(
-        "SELECT pair_name, pool_address, base_vault, quote_vault FROM reydium_pools WHERE pool_address = '3pvmL7M24uqzudAxUYmvixtkWTC5yaDhTUSyB8cewnJK'",
+        "SELECT pair_name, pool_address, base_vault, quote_vault FROM reydium_pools WHERE (base_token = ?1 OR quote_token = ?1) AND (base_token = ?2 OR quote_token = ?2)",
     )?;
 
     // Выполнение запроса и обработка результатов
-    let mut rows = stmt.query([ ])?;
+    let mut rows = stmt.query([token_a,token_b ])?;
 
     let mut prices = Vec::new();
 
@@ -309,12 +297,13 @@ pub fn get_prices_for_pools(
         // Конвертация строковых значений в Pubkey
         let base_vault_pubkey = Pubkey::from_str(&base_vault)?;
         let quote_vault_pubkey = Pubkey::from_str(&quote_vault)?;
-
+        println!("Получение цены в пуле {}: {} \r\n", pair_name, pool_address);
         // Получение цены из функции `get_price`
         match get_price(client, base_vault_pubkey, quote_vault_pubkey) {
             Ok((price,base_balance,quote_balance)) => {
                 if base_balance>0.1 && quote_balance>0.1 {
-                    prices.push((pair_name, pool_address, price, base_balance,quote_balance))
+                    prices.push((pair_name, pool_address, price, base_balance,quote_balance));
+                    println!("Цена в пуле  {} \r\n", price);
                 }
             },
             Err(err) => eprintln!("Ошибка получения цены для {}: {}", pair_name, err),
@@ -322,4 +311,51 @@ pub fn get_prices_for_pools(
     }
 
     Ok(prices)
+}
+
+
+pub fn clean_null_bytes_in_tokens() -> std::result::Result<(), Box<dyn StdError>> {
+    // Открываем соединение с базой данных
+    let mut conn = Connection::open(db_path)?;
+
+    // Начинаем транзакцию для повышения производительности
+    let transaction = conn.transaction()?;
+
+    // Ограничиваем область действия stmt
+    {
+        let mut stmt = transaction.prepare("SELECT id, base_token, quote_token FROM reydium_pools")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i32>(0)?,               // id
+                row.get::<_, String>(1)?,           // base_token
+                row.get::<_, String>(2)?,           // quote_token
+            ))
+        })?;
+
+        for row in rows {
+            let (id, base_token, quote_token) = row?;
+
+            // Удаляем нулевые байты из полей base_token и quote_token
+            let cleaned_base_token = base_token.trim_end_matches('\0').to_string();
+            let cleaned_quote_token = quote_token.trim_end_matches('\0').to_string();
+
+            // Обновляем запись только при необходимости, если данные изменились
+            if base_token != cleaned_base_token || quote_token != cleaned_quote_token {
+                transaction.execute(
+                    "UPDATE reydium_pools SET base_token = ?1, quote_token = ?2 WHERE id = ?3",
+                    &[&cleaned_base_token, &cleaned_quote_token, &id.to_string()],
+                )?;
+                println!(
+                    "Updated ID {}: base_token '{}' -> '{}', quote_token '{}' -> '{}'",
+                    id, base_token, cleaned_base_token, quote_token, cleaned_quote_token
+                );
+            }
+        } // stmt автоматически удаляется при выходе из области действия
+    }
+
+    // Теперь stmt утилизирован, вызываем commit()
+    transaction.commit()?;
+    println!("Все нулевые байты удалены.");
+
+    Ok(())
 }

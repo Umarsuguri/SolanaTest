@@ -7,7 +7,7 @@ use mpl_token_metadata::accounts::Metadata;
 use spl_token::state::Account;
 use solana_program::program_pack::Pack;
 
-pub const db_path: &str = "pools11.db";
+pub const db_path: &str = "pools.db";
 pub fn get_token_symbol(client: &RpcClient, pubkey: &Pubkey) -> String{
     // Получаем информацию об аккаунтах
 
@@ -35,8 +35,8 @@ pub fn get_token_symbol(client: &RpcClient, pubkey: &Pubkey) -> String{
         };
         match Metadata::from_bytes(&data) {
             Ok(metadata) => {
-                println!("Symbol: {}", metadata.symbol);
-                return metadata.symbol;
+                println!("Symbol: {:?}", metadata.symbol.trim_end_matches('\0').as_bytes());
+                return metadata.symbol.to_string();
             }
             Err(e) => {
                 println!("Failed to parse metadata: {}", e);
