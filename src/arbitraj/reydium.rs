@@ -28,23 +28,109 @@ use solana_program::bpf_loader_upgradeable::UpgradeableLoaderState::Program;
  */
 use borsh::{BorshDeserialize, BorshSerialize};
 
-#[derive(Debug, Serialize, Deserialize)]
-struct ApiResponse {
-    id: String,
-    success: bool,
-    data: Vec<PoolData>,
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ApiResponse {
+    pub id: String,
+    pub success: bool,
+    pub data: Vec<PoolData>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct PoolData {
-    #[serde(rename = "type")]
-    type_: String,
-    programId: String,
-    id: String,
-    price: f64,
-    // добавьте остальные поля по аналогии
+// Данные одиночного пула (по каждому элементу в "data")
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PoolData {
+    pub r#type: String,
+    pub programId: String,
+    pub id: String,
+    pub mintA: MintData,
+    pub mintB: MintData,
+    pub price: f64,
+    pub mintAmountA: f64,
+    pub mintAmountB: f64,
+    pub feeRate: f64,
+    pub openTime: String,
+    pub tvl: f64,
+    pub day: TimeframeData,
+    pub week: TimeframeData,
+    pub month: TimeframeData,
+    pub pooltype: Vec<String>,
+    pub rewardDefaultInfos: Vec<String>, // На случай, если это массив строк (пустой).
+    pub farmUpcomingCount: u64,
+    pub farmOngoingCount: u64,
+    pub farmFinishedCount: u64,
+    pub marketId: String,
+    pub lpMint: MintData,
+    pub lpPrice: f64,
+    pub lpAmount: f64,
+    pub burnPercent: f64,
 }
-///Состояни пула ликвидности
+
+// Данные о "Mint" (используются в mintA, mintB, lpMint)
+#[derive(Serialize, Deserialize, Debug)]
+pub struct MintData {
+    pub chainId: u64,
+    pub address: String,
+    pub programId: String,
+    pub logoURI: Option<String>, // Может отсутствовать
+    pub symbol: Option<String>,  // Может отсутствовать
+    pub name: Option<String>,    // Может отсутствовать
+    pub decimals: u64,
+    pub tags: Vec<String>,
+    pub extensions: Option<serde_json::Value>, // Может быть пустым объектом
+}
+
+// Данные о временном промежутке (day, week, month)
+#[derive(Serialize, Deserialize, Debug)]
+pub struct TimeframeData {
+    pub volume: f64,
+    pub volumeQuote: f64,
+    pub volumeFee: f64,
+    pub apr: f64,
+    pub feeApr: f64,
+    pub priceMin: f64,
+    pub priceMax: f64,
+    pub rewardApr: Vec<serde_json::Value>, // Похоже на пустой массив
+}
+#[derive(Deserialize, Debug)]
+struct Pool {
+    ammId: String,
+    apr24h: f64, // Название полей должно точно совпадать с JSON
+    apr30d: f64,
+    apr7d: f64,
+    baseMint: String,
+    fee24h: f64,
+    fee24hQuote: f64,
+    fee30d: f64,
+    fee30dQuote: f64,
+    fee7d: f64,
+    fee7dQuote: f64,
+    liquidity:f64,
+    lpMint: String,
+    lpPrice: f64,
+    market: String,
+    name: String,
+    price: f64,
+    quoteMint:String,
+    tokenAmountCoin:f64,
+    tokenAmountLp:f64,
+    tokenAmountPc:f64,
+    volume24h:f64,
+    volume24hQuote:f64,
+    volume30d:f64,
+    volume30dQuote:f64,
+    volume7d:f64,
+    volume7dQuote:f64
+}
+
+impl Pool {
+    /// Рассчитать цену базового токена
+    fn calculate_price(&self) -> Option<f64> {
+        if self.tokenAmountCoin > 0.0 {
+            Some(self.tokenAmountPc / self.tokenAmountCoin)
+        } else {
+            None // Нельзя делить на ноль
+        }
+    }
+}
 
 ///Состояние пула ликвидности версии 4
 #[derive(BorshDeserialize, BorshSerialize)]
@@ -280,9 +366,8 @@ pub fn get_prices_for_pools(
 
     // SQL-запрос для выбора подходящих пулов
     let mut stmt = conn.prepare(
-        "SELECT pair_name, pool_address, base_vault, quote_vault FROM reydium_pools WHERE (base_token = ?1 OR quote_token = ?1) AND (base_token = ?2 OR quote_token = ?2)",
+        "SELECT pair_name, base_token, quote_token, pool_address, base_vault, quote_vault FROM reydium_pools WHERE (base_token = ?1 OR quote_token = ?1) AND (base_token = ?2 OR quote_token = ?2)",
     )?;
-
     // Выполнение запроса и обработка результатов
     let mut rows = stmt.query([token_a,token_b ])?;
 
@@ -290,20 +375,26 @@ pub fn get_prices_for_pools(
 
     while let Some(row) = rows.next()? {
         let pair_name: String = row.get(0)?;
-        let pool_address: String = row.get(1)?;
-        let base_vault: String = row.get(2)?;
-        let quote_vault: String = row.get(3)?;
+        let base_token: String = row.get(1)?;
+        let quote_token: String = row.get(2)?;
+        let pool_address: String = row.get(3)?;
+        let base_vault: String = row.get(4)?;
+        let quote_vault: String = row.get(5)?;
 
         // Конвертация строковых значений в Pubkey
         let base_vault_pubkey = Pubkey::from_str(&base_vault)?;
         let quote_vault_pubkey = Pubkey::from_str(&quote_vault)?;
-        println!("Получение цены в пуле {}: {} \r\n", pair_name, pool_address);
         // Получение цены из функции `get_price`
         match get_price(client, base_vault_pubkey, quote_vault_pubkey) {
             Ok((price,base_balance,quote_balance)) => {
-                if base_balance>0.1 && quote_balance>0.1 {
-                    prices.push((pair_name, pool_address, price, base_balance,quote_balance));
-                    println!("Цена в пуле  {} \r\n", price);
+                if base_balance>100.0 && quote_balance>100.0 {
+                    if base_token == token_a {
+                        prices.push((pair_name, pool_address, price, base_balance,quote_balance));
+                    }
+                    else if base_token == token_b {
+                        prices.push((pair_name, pool_address, 1.0/price, base_balance,quote_balance));
+                    }
+
                 }
             },
             Err(err) => eprintln!("Ошибка получения цены для {}: {}", pair_name, err),
@@ -358,4 +449,77 @@ pub fn clean_null_bytes_in_tokens() -> std::result::Result<(), Box<dyn StdError>
     println!("Все нулевые байты удалены.");
 
     Ok(())
+}
+
+pub async fn fetch_pools(client: &RpcClient) -> Result<(), Box<dyn std::error::Error>> {
+    let url = "https://api.raydium.io/v2/main/pairs";
+    let response: Value = reqwest::get(url).await?.json().await?;
+
+    // Подключение к базе данных
+    let pools = response.as_array()
+        .ok_or("Неверная структура ответа API")? // ? применяется на этапе Result
+        .iter() // После успешного получения Vec, вызывается iter()
+        .map(|pool| serde_json::from_value::<Pool>(pool.clone()))
+        .collect::<Result<Vec<Pool>, _>>()?;
+
+    for pool in pools {
+        if (pool.ammId == "3pvmL7M24uqzudAxUYmvixtkWTC5yaDhTUSyB8cewnJK" ) {
+            let data = pool.calculate_price();
+            println!("price {:?}",data);
+            println!("lp price {}",pool.lpPrice);
+            println!("price {}",pool.price);
+        }
+
+    }
+    Ok(())
+}
+pub async fn get_prices_for_pools1(
+    client: &RpcClient,
+    token_a: &str,
+    token_b: &str,
+) -> Result<Vec<(String, String, f64, f64 )>, Box<dyn StdError>> {
+    // Подключение к базе данных
+
+    let conn = Connection::open(db_path)?;
+    // SQL-запрос для выбора подходящих пулов
+    let mut stmt = conn.prepare(
+        "SELECT pair_name, base_token, quote_token, pool_address, base_vault, quote_vault FROM reydium_pools WHERE (base_token = ?1 OR quote_token = ?1) AND (base_token = ?2 OR quote_token = ?2)",
+    )?;
+    // Выполнение запроса и обработка результатов
+    let mut rows = stmt.query([token_a,token_b ])?;
+
+    let mut prices = Vec::new();
+
+    while let Some(row) = rows.next()? {
+        let pair_name: String = row.get(0)?;
+        let base_token: String = row.get(1)?;
+        let quote_token: String = row.get(2)?;
+        let pool_address: String = row.get(3)?;
+        // Конвертация строковых значений в Pubkey
+        println!("{} ",pool_address);
+        // Получение цены из функции `get_price`
+
+        let url = format!("https://api-v3.raydium.io/pools/info/ids?ids={}",pool_address);
+        let response: Value = reqwest::get(url).await?.json().await?;
+
+        match serde_json::from_value::<ApiResponse>(response) {
+            Ok(api_response) => {
+                // Если парсинг успешен, используйте объект `api_response`
+                let pool_id = api_response.data[0].id.clone();
+                let price = api_response.data[0].price;
+                let lp_price = api_response.data[0].lpPrice;
+                println!("{} ::: {} ::: {}",pool_id,price,lp_price);
+                prices.push((pair_name,pool_id,price,lp_price));
+
+            }
+            Err(e) => {
+                // Если произошла ошибка, обработайте её
+                eprintln!("Failed to parse response: {}", e);
+            }
+        }
+
+
+    }
+
+    Ok(prices)
 }

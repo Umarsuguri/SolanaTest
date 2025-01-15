@@ -43,15 +43,15 @@ struct Pool {
     whirlpoolsConfig: String,
     modifiedTimeMs: Option<i64>,
     tvl: Option<f64>,
-    volume: Volume,
-    volumeDenominatedA: Volume,
-    volumeDenominatedB: Volume,
+    volume: Option<Volume>,
+    volumeDenominatedA: Option<Volume>,
+    volumeDenominatedB: Option<Volume>,
     priceRange: Option<PriceRange>,
-    feeApr: TotalApr,
-    reward0Apr: TotalApr,
-    reward1Apr: TotalApr,
-    reward2Apr: TotalApr,
-    totalApr: TotalApr,
+    feeApr: Option<TotalApr>,
+    reward0Apr: Option<TotalApr>,
+    reward1Apr: Option<TotalApr>,
+    reward2Apr: Option<TotalApr>,
+    totalApr: Option<TotalApr>,
 }
 #[derive(Deserialize, Debug)]
 struct Token {
@@ -103,12 +103,15 @@ pub(crate) async fn fetch_and_store_pools(client: RpcClient) -> Result<(), Box<d
         .map(|pool| serde_json::from_value::<Pool>(pool.clone()))
         .collect::<Result<Vec<Pool>, _>>()?;
     let mut cnt:u64 = 0;
-    println!("1");
+
     for pool in pools {
         if (pool.tokenA.symbol == "SOL" || pool.tokenB.symbol == "SOL")&&(pool.tokenA.symbol == "DOGE" || pool.tokenB.symbol == "DOGE") {
-            println!("{} ::: {:?} ::: {}/{}:{} ",cnt,pool.address,pool.tokenA.symbol,pool.tokenB.symbol,pool.price);
-            let pr = 1.0/pool.price;
-            println!("{} ::: {:?} ::: {}/{}:{} \r\n ",cnt,pool.address,pool.tokenB.symbol,pool.tokenA.symbol,pr);
+            if pool.tokenA.symbol == "SOL" {
+                println!("{} ::: {} ::: {}/{}:{} ",cnt,pool.address,pool.tokenB.symbol,pool.tokenA.symbol,1.0/pool.price);
+            }
+            else if pool.tokenB.symbol == "SOL" {
+                println!("{} ::: {} ::: {}/{}:{} ",cnt,pool.address,pool.tokenA.symbol,pool.tokenB.symbol,pool.price);
+            }
             cnt+=1;
         }
 

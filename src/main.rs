@@ -4,8 +4,8 @@ use solana_program::pubkey::Pubkey;
 use std::str::FromStr;
 use std::convert::TryFrom;
 use solana_arbitraj::{db_path, get_token_symbol};
-use crate::arbitraj::update_data;
-use crate::arbitraj::reydium::{clean_null_bytes_in_tokens, get_prices_for_pools};
+use crate::arbitraj::{reydium, update_data};
+use crate::arbitraj::reydium::{clean_null_bytes_in_tokens, get_prices_for_pools, get_prices_for_pools1};
 use crate::arbitraj::orca::fetch_and_store_pools as orca_store;
 pub const  RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 //pub const  RPC_URL: &str ="https://mainnet.helius-rpc.com/?api-key=10ba4005-0e99-4a5c-96ba-bfdf5c037ef1";
@@ -33,16 +33,21 @@ async fn main(){
         Err(e) => eprintln!("Error: {}", e),
     }
 
-    match get_prices_for_pools(&client, "SOL", "DOGE"){
+     */
+    //reydium::fetch_pools(&client).await.unwrap();
+    println!("Reydium!");
+    match get_prices_for_pools1(&client, "DOGE", "SOL").await{
         Ok(prices) => {
+            let mut cnt:u32 = 0;
             for price in prices {
-                println!("{:?}", price.2);
+                println!("{} ::: {} ::: DOGE/SOL:{:?}",cnt, price.1, price.2);
+                cnt+=1;
             }
         }
         Err(e) => eprintln!("Error: {}", e),
     }
 
-     */
+    println!("Orca!");
     match orca_store(client).await{
         Ok(()) => println!("Done!"),
         Err(e) => eprintln!("Error: {}", e),
